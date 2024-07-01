@@ -166,6 +166,10 @@ class R3AstHumanizer implements t.Visitor<void> {
     this.result.push(['UnknownBlock', block.name]);
   }
 
+  visitLetDeclaration(decl: t.LetDeclaration) {
+    this.result.push(['LetDeclaration', decl.name, unparse(decl.value)]);
+  }
+
   private visitAll(nodes: t.Node[][]) {
     nodes.forEach((node) => t.visitAll(this, node));
   }
@@ -905,6 +909,25 @@ describe('R3 template transform', () => {
           '@loading {Loading...}' +
           '@placeholder {Placeholder content!}' +
           '@error {Loading failed :(}',
+      ).toEqual([
+        ['DeferredBlock'],
+        ['Element', 'calendar-cmp'],
+        ['BoundAttribute', 0, 'date', 'current'],
+        ['DeferredBlockPlaceholder'],
+        ['Text', 'Placeholder content!'],
+        ['DeferredBlockLoading'],
+        ['Text', 'Loading...'],
+        ['DeferredBlockError'],
+        ['Text', 'Loading failed :('],
+      ]);
+    });
+
+    it('should parse a deferred block with comments between the connected blocks', () => {
+      expectFromHtml(
+        '@defer {<calendar-cmp [date]="current"/>}' +
+          '<!-- Show this while loading --> @loading {Loading...}' +
+          '<!-- Show this on the server --> @placeholder {Placeholder content!}' +
+          '<!-- Show this on error --> @error {Loading failed :(}',
       ).toEqual([
         ['DeferredBlock'],
         ['Element', 'calendar-cmp'],
@@ -2070,6 +2093,31 @@ describe('R3 template transform', () => {
       ]);
     });
 
+    it('should parse an if block containing comments between the branches', () => {
+      expectFromHtml(`
+        @if (cond.expr; as foo) {
+          Main case was true!
+        }
+        <!-- Extra case -->
+        @else if (other.expr) {
+          Extra case was true!
+        }
+        <!-- False case -->
+        @else {
+          False case!
+        }
+        `).toEqual([
+        ['IfBlock'],
+        ['IfBlockBranch', 'cond.expr'],
+        ['Variable', 'foo', 'foo'],
+        ['Text', ' Main case was true! '],
+        ['IfBlockBranch', 'other.expr'],
+        ['Text', ' Extra case was true! '],
+        ['IfBlockBranch', null],
+        ['Text', ' False case! '],
+      ]);
+    });
+
     describe('validations', () => {
       it('should report an if block without a condition', () => {
         expect(() =>
@@ -2177,6 +2225,30 @@ describe('R3 template transform', () => {
   describe('unknown blocks', () => {
     it('should parse unknown blocks', () => {
       expectFromHtml('@unknown {}', true /* ignoreError */).toEqual([['UnknownBlock', 'unknown']]);
+    });
+  });
+
+  describe('@let declarations', () => {
+    it('should parse a let declaration', () => {
+      expectFromHtml('@let foo = 123 + 456;').toEqual([['LetDeclaration', 'foo', '123 + 456']]);
+    });
+
+    it('should report syntax errors in the let declaration value', () => {
+      expect(() => parse('@let foo = {one: 1;')).toThrowError(
+        /Parser Error: Missing expected } at the end of the expression \[\{one: 1]/,
+      );
+    });
+
+    it('should report a let declaration with no value', () => {
+      expect(() => parse('@let foo =  ;')).toThrowError(/@let declaration value cannot be empty/);
+    });
+
+    it('should produce a text node when @let is used inside ngNonBindable', () => {
+      expectFromHtml('<div ngNonBindable>@let foo = 123;</div>').toEqual([
+        ['Element', 'div'],
+        ['TextAttribute', 'ngNonBindable', ''],
+        ['Text', '@let foo = 123;'],
+      ]);
     });
   });
 });

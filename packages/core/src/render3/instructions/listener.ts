@@ -16,7 +16,8 @@ import {RElement} from '../interfaces/renderer_dom';
 import {isDirectiveHost} from '../interfaces/type_checks';
 import {CLEANUP, CONTEXT, LView, RENDERER, TView} from '../interfaces/view';
 import {assertTNodeType} from '../node_assert';
-import {profiler, ProfilerEvent} from '../profiler';
+import {profiler} from '../profiler';
+import {ProfilerEvent} from '../profiler_types';
 import {getCurrentDirectiveDef, getCurrentTNode, getLView, getTView} from '../state';
 import {getComponentLViewByIndex, getNativeByTNode, unwrapRNode} from '../util/view_utils';
 
@@ -34,10 +35,10 @@ import {
  * an actual implementation when the event replay feature is enabled via
  * `withEventReplay()` call.
  */
-let disableEventReplayFn = (el: RElement, eventName: string, listenerFn: (e?: any) => any) => {};
+let stashEventListener = (el: RElement, eventName: string, listenerFn: (e?: any) => any) => {};
 
-export function setDisableEventReplayImpl(fn: typeof disableEventReplayFn) {
-  disableEventReplayFn = fn;
+export function setStashFn(fn: typeof stashEventListener) {
+  stashEventListener = fn;
 }
 
 /**
@@ -181,8 +182,6 @@ export function listenerInternal(
       ? (_lView: LView) => eventTargetResolver(unwrapRNode(_lView[tNode.index]))
       : tNode.index;
 
-    disableEventReplayFn(native, eventName, listenerFn);
-
     // In order to match current behavior, native DOM event listeners must be added for all
     // events (including outputs).
 
@@ -216,7 +215,8 @@ export function listenerInternal(
       (<any>existingListener).__ngLastListenerFn__ = listenerFn;
       processOutputs = false;
     } else {
-      listenerFn = wrapListener(tNode, lView, context, listenerFn, false /** preventDefault */);
+      listenerFn = wrapListener(tNode, lView, context, listenerFn);
+      stashEventListener(native, eventName, listenerFn);
       const cleanupFn = renderer.listen(target as RElement, eventName, listenerFn);
       ngDevMode && ngDevMode.rendererAddEventListener++;
 
@@ -226,7 +226,7 @@ export function listenerInternal(
   } else {
     // Even if there is no native listener to add, we still need to wrap the listener so that OnPush
     // ancestors are marked dirty when an event occurs.
-    listenerFn = wrapListener(tNode, lView, context, listenerFn, false /** preventDefault */);
+    listenerFn = wrapListener(tNode, lView, context, listenerFn);
   }
 
   // subscribe to directive outputs
@@ -292,7 +292,6 @@ function wrapListener(
   lView: LView<{} | null>,
   context: {} | null,
   listenerFn: (e?: any) => any,
-  wrapWithPreventDefault: boolean,
 ): EventListener {
   // Note: we are performing most of the work in the listener function itself
   // to optimize listener registration.
@@ -317,10 +316,6 @@ function wrapListener(
       // We should prevent default if any of the listeners explicitly return false
       result = executeListenerWithErrorHandling(lView, context, nextListenerFn, e) && result;
       nextListenerFn = (<any>nextListenerFn).__ngNextListenerFn__;
-    }
-
-    if (wrapWithPreventDefault && result === false) {
-      e.preventDefault();
     }
 
     return result;

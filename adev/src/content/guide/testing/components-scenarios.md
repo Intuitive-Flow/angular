@@ -184,7 +184,7 @@ In this test suite, the *only* provider of `UserService` is the root testing mod
 
 <docs-code header="TestBed injector" path="adev/src/content/examples/testing/src/app/welcome/welcome.component.spec.ts" visibleRegion="inject-from-testbed" />
 
-HELPFUL: For a use case in which `TestBed.inject()` does not work, see the [*Override component providers*](#component-override) section that explains when and why you must get the service from the component's injector instead.
+HELPFUL: For a use case in which `TestBed.inject()` does not work, see the [*Override component providers*](#override-component-providers) section that explains when and why you must get the service from the component's injector instead.
 
 ### Final setup and tests
 
@@ -494,7 +494,7 @@ There's no `fakeAsync()`.
 Marble testing uses a test scheduler to simulate the passage of time in a synchronous test.
 
 The beauty of marble testing is in the visual definition of the observable streams.
-This test defines a [*cold* observable](#cold-observable) that waits three [frames](#marble-frame) \(`---`\), emits a value \(`x`\), and completes \(`|`\).
+This test defines a [*cold* observable](#learn-about-marble-testing) that waits three [frames](#learn-about-marble-testing) \(`---`\), emits a value \(`x`\), and completes \(`|`\).
 In the second argument you map the value marker \(`x`\) to the emitted value \(`testQuote`\).
 
 <docs-code path="adev/src/content/examples/testing/src/app/twain/twain.component.marbles.spec.ts" visibleRegion="test-quote-marbles"/>

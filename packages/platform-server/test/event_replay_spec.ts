@@ -7,7 +7,14 @@
  */
 
 import {DOCUMENT} from '@angular/common';
-import {Component, destroyPlatform, getPlatform, Type} from '@angular/core';
+import {
+  Component,
+  destroyPlatform,
+  ErrorHandler,
+  getPlatform,
+  PLATFORM_ID,
+  Type,
+} from '@angular/core';
 import {TestBed} from '@angular/core/testing';
 import {
   withEventReplay,
@@ -17,8 +24,16 @@ import {
 
 import {provideServerRendering} from '../public_api';
 import {EVENT_DISPATCH_SCRIPT_ID, renderApplication} from '../src/utils';
+import {EventPhase} from '@angular/core/primitives/event-dispatch';
 
-import {getAppContents, hydrate, render as renderHtml, resetTViewsFor} from './dom_utils';
+import {
+  getAppContents,
+  hydrate,
+  renderAndHydrate,
+  render as renderHtml,
+  resetTViewsFor,
+} from './dom_utils';
+import {CONTRACT_PROPERTY} from '@angular/core/src/hydration/event_replay';
 
 /**
  * Represents the <script> tag added by the build process to inject
@@ -35,6 +50,24 @@ function hasEventDispatchScript(content: string) {
 /** Checks whether there are any `jsaction` attributes present in the generated HTML */
 function hasJSActionAttrs(content: string) {
   return content.includes('jsaction="');
+}
+
+/**
+ * Enables strict error handler that fails a test
+ * if there was an error reported to the ErrorHandler.
+ */
+function withStrictErrorHandler() {
+  class StrictErrorHandler extends ErrorHandler {
+    override handleError(error: any): void {
+      fail(error);
+    }
+  }
+  return [
+    {
+      provide: ErrorHandler,
+      useClass: StrictErrorHandler,
+    },
+  ];
 }
 
 describe('event replay', () => {
@@ -59,7 +92,8 @@ describe('event replay', () => {
   });
 
   afterEach(() => {
-    doc.body.textContent = '';
+    doc.body.outerHTML = '<body></body>';
+    globalThis[CONTRACT_PROPERTY] = {};
   });
 
   /**
@@ -102,6 +136,32 @@ describe('event replay', () => {
       }
     }
   }
+
+  it('should work for elements with local refs', async () => {
+    const onClickSpy = jasmine.createSpy();
+
+    @Component({
+      selector: 'app',
+      standalone: true,
+      template: `
+        <button id="btn" (click)="onClick()" #localRef></button>
+      `,
+    })
+    class AppComponent {
+      onClick = onClickSpy;
+    }
+    const html = await ssr(AppComponent);
+    const ssrContents = getAppContents(html);
+    render(doc, ssrContents);
+    resetTViewsFor(AppComponent);
+    const btn = doc.getElementById('btn')!;
+    btn.click();
+    const appRef = await hydrate(doc, AppComponent, {
+      hydrationFeatures: [withEventReplay()],
+    });
+    appRef.tick();
+    expect(onClickSpy).toHaveBeenCalled();
+  });
 
   it('should route to the appropriate component with content projection', async () => {
     const outerOnClickSpy = jasmine.createSpy();
@@ -146,7 +206,6 @@ describe('event replay', () => {
     const appRef = await hydrate(doc, AppComponent, {
       hydrationFeatures: [withEventReplay()],
     });
-    appRef.tick();
     expect(outerOnClickSpy).toHaveBeenCalledBefore(innerOnClickSpy);
   });
 
@@ -183,10 +242,9 @@ describe('event replay', () => {
     expect(clickSpy).not.toHaveBeenCalled();
     expect(focusSpy).not.toHaveBeenCalled();
     resetTViewsFor(SimpleComponent);
-    const appRef = await hydrate(doc, SimpleComponent, {
+    await hydrate(doc, SimpleComponent, {
       hydrationFeatures: [withEventReplay()],
     });
-    appRef.tick();
     expect(clickSpy).toHaveBeenCalled();
     expect(focusSpy).toHaveBeenCalled();
   });
@@ -216,7 +274,6 @@ describe('event replay', () => {
     const appRef = await hydrate(doc, SimpleComponent, {
       hydrationFeatures: [withEventReplay()],
     });
-    appRef.tick();
     expect(el.hasAttribute('jsaction')).toBeFalse();
     expect((el.firstChild as Element).hasAttribute('jsaction')).toBeFalse();
   });
@@ -267,9 +324,7 @@ describe('event replay', () => {
       const appRef = await hydrate(doc, SimpleComponent, {
         hydrationFeatures: [withEventReplay()],
       });
-      appRef.tick();
-      // This is a bug
-      expect(onClickSpy).toHaveBeenCalledTimes(1);
+      expect(onClickSpy).toHaveBeenCalledTimes(2);
       onClickSpy.calls.reset();
       bottomEl.click();
       expect(onClickSpy).toHaveBeenCalledTimes(2);
@@ -301,7 +356,6 @@ describe('event replay', () => {
       const appRef = await hydrate(doc, SimpleComponent, {
         hydrationFeatures: [withEventReplay()],
       });
-      appRef.tick();
       expect(onClickSpy).toHaveBeenCalledTimes(1);
       onClickSpy.calls.reset();
       bottomEl.click();
@@ -310,6 +364,8 @@ describe('event replay', () => {
 
     it('should not have differences in event fields', async () => {
       let currentEvent!: Event;
+      let latestTarget: EventTarget | null = null;
+      let latestCurrentTarget: EventTarget | null = null;
       @Component({
         standalone: true,
         selector: 'app',
@@ -322,6 +378,8 @@ describe('event replay', () => {
       class SimpleComponent {
         onClick(event: Event) {
           currentEvent = event;
+          latestTarget = event.target;
+          latestCurrentTarget = event.currentTarget;
         }
       }
       const docContents = `<html><head></head><body>${EVENT_DISPATCH_SCRIPT}<app></app></body></html>`;
@@ -331,19 +389,17 @@ describe('event replay', () => {
       resetTViewsFor(SimpleComponent);
       const bottomEl = doc.getElementById('bottom')!;
       bottomEl.click();
-      const appRef = await hydrate(doc, SimpleComponent, {
+      await hydrate(doc, SimpleComponent, {
         hydrationFeatures: [withEventReplay()],
       });
-      appRef.tick();
       const replayedEvent = currentEvent;
+      expect(replayedEvent.target).not.toBeNull();
+      expect(replayedEvent.currentTarget).not.toBeNull();
+      expect(replayedEvent.eventPhase).toBe(EventPhase.REPLAY);
       bottomEl.click();
-      appRef.tick();
       const normalEvent = currentEvent;
-      expect(replayedEvent).not.toBe(normalEvent);
-      expect(replayedEvent.target).toBe(normalEvent.target);
-      expect(replayedEvent.currentTarget).toBe(normalEvent.currentTarget);
-      expect(replayedEvent.composedPath).toBe(normalEvent.composedPath);
-      expect(replayedEvent.eventPhase).toBe(normalEvent.eventPhase);
+      expect(replayedEvent.target).toBe(latestTarget);
+      expect(replayedEvent.currentTarget).toBe(latestCurrentTarget);
     });
   });
 
@@ -379,6 +435,17 @@ describe('event replay', () => {
 
       expect(hasJSActionAttrs(ssrContents)).toBeFalse();
       expect(hasEventDispatchScript(ssrContents)).toBeFalse();
+
+      resetTViewsFor(SimpleComponent);
+      await renderAndHydrate(doc, ssrContents, SimpleComponent, {
+        envProviders: [
+          {provide: PLATFORM_ID, useValue: 'browser'},
+          // This ensures that there are no errors while bootstrapping an application
+          // that has no events, but enables Event Replay feature.
+          withStrictErrorHandler(),
+        ],
+        hydrationFeatures: [withEventReplay()],
+      });
     });
 
     it('should not replay mouse events', async () => {

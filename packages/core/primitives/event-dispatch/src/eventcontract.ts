@@ -30,14 +30,12 @@
  * possible and thus its dependencies to a minimum.
  */
 
-import * as a11yClickLib from './a11y_click';
-import {ActionResolver} from './action_resolver';
 import {EarlyJsactionData, EarlyJsactionDataContainer} from './earlyeventcontract';
 import * as eventLib from './event';
 import {EventContractContainerManager} from './event_contract_container';
 import {A11Y_CLICK_SUPPORT, MOUSE_SPECIAL_SUPPORT} from './event_contract_defines';
 import * as eventInfoLib from './event_info';
-import {EventType} from './event_type';
+import {EventType, NON_BUBBLING_MOUSE_EVENTS} from './event_type';
 import {Restriction} from './restriction';
 
 /**
@@ -46,12 +44,6 @@ import {Restriction} from './restriction';
 export declare interface UnrenamedEventContract {
   // Alias for Jsction EventContract registerDispatcher.
   ecrd(dispatcher: Dispatcher, restriction: Restriction): void;
-  // Unrenamed function. Abbreviation for `eventContract.addA11yClickSupport`.
-  ecaacs?: (
-    updateEventInfoForA11yClick: typeof a11yClickLib.updateEventInfoForA11yClick,
-    preventDefaultForA11yClick: typeof a11yClickLib.preventDefaultForA11yClick,
-    populateClickOnlyAction: typeof a11yClickLib.populateClickOnlyAction,
-  ) => void;
 }
 
 /** A function that is called to handle events captured by the EventContract. */
@@ -88,8 +80,6 @@ export class EventContract implements UnrenamedEventContract {
 
   private containerManager: EventContractContainerManager | null;
 
-  private readonly actionResolver?: ActionResolver;
-
   /**
    * The DOM events which this contract covers. Used to prevent double
    * registration of event types. The value of the map is the
@@ -116,29 +106,11 @@ export class EventContract implements UnrenamedEventContract {
    */
   private queuedEventInfos: eventInfoLib.EventInfo[] | null = [];
 
-  /** Whether to add an a11y click listener. */
-  private addA11yClickListener = false;
-
-  ecaacs?: (
-    updateEventInfoForA11yClick: typeof a11yClickLib.updateEventInfoForA11yClick,
-    preventDefaultForA11yClick: typeof a11yClickLib.preventDefaultForA11yClick,
-    populateClickOnlyAction: typeof a11yClickLib.populateClickOnlyAction,
-  ) => void;
-
   constructor(
     containerManager: EventContractContainerManager,
-    private readonly useActionResolver = true,
+    private readonly useActionResolver?: false,
   ) {
     this.containerManager = containerManager;
-    if (this.useActionResolver) {
-      this.actionResolver = new ActionResolver({
-        syntheticMouseEventSupport: EventContract.MOUSE_SPECIAL_SUPPORT,
-      });
-    }
-    if (EventContract.A11Y_CLICK_SUPPORT) {
-      // Add a11y click support to the `EventContract`.
-      this.addA11yClickSupport();
-    }
   }
 
   private handleEvent(eventType: string, event: Event, container: Element) {
@@ -162,9 +134,6 @@ export class EventContract implements UnrenamedEventContract {
       this.queuedEventInfos?.push(eventInfo);
       return;
     }
-    if (this.useActionResolver) {
-      this.actionResolver!.resolve(eventInfo);
-    }
     this.dispatcher(eventInfo);
   }
 
@@ -186,13 +155,7 @@ export class EventContract implements UnrenamedEventContract {
       return;
     }
 
-    if (
-      !EventContract.MOUSE_SPECIAL_SUPPORT &&
-      (eventType === EventType.MOUSEENTER ||
-        eventType === EventType.MOUSELEAVE ||
-        eventType === EventType.POINTERENTER ||
-        eventType === EventType.POINTERLEAVE)
-    ) {
+    if (!EventContract.MOUSE_SPECIAL_SUPPORT && NON_BUBBLING_MOUSE_EVENTS.indexOf(eventType) >= 0) {
       return;
     }
 
@@ -216,12 +179,6 @@ export class EventContract implements UnrenamedEventContract {
         eventHandler(eventType, event, element);
       };
     });
-
-    // Automatically install a keypress/keydown event handler if support for
-    // accessible clicks is turned on.
-    if (this.addA11yClickListener && eventType === EventType.CLICK) {
-      this.addEvent(EventType.KEYDOWN);
-    }
   }
 
   /**
@@ -329,40 +286,13 @@ export class EventContract implements UnrenamedEventContract {
    * Adds a11y click support to the given `EventContract`. Meant to be called in
    * the same compilation unit as the `EventContract`.
    */
-  addA11yClickSupport() {
-    this.addA11yClickSupportImpl(
-      a11yClickLib.updateEventInfoForA11yClick,
-      a11yClickLib.preventDefaultForA11yClick,
-      a11yClickLib.populateClickOnlyAction,
-    );
-  }
+  addA11yClickSupport() {}
 
   /**
    * Enables a11y click support to be deferred. Meant to be called in the same
    * compilation unit as the `EventContract`.
    */
-  exportAddA11yClickSupport() {
-    this.addA11yClickListener = true;
-    this.ecaacs = this.addA11yClickSupportImpl.bind(this);
-  }
-
-  /**
-   * Unrenamed function that loads a11yClickSupport.
-   */
-  private addA11yClickSupportImpl(
-    updateEventInfoForA11yClick: typeof a11yClickLib.updateEventInfoForA11yClick,
-    preventDefaultForA11yClick: typeof a11yClickLib.preventDefaultForA11yClick,
-    populateClickOnlyAction: typeof a11yClickLib.populateClickOnlyAction,
-  ) {
-    this.addA11yClickListener = true;
-    if (this.useActionResolver) {
-      this.actionResolver!.addA11yClickSupport(
-        updateEventInfoForA11yClick,
-        preventDefaultForA11yClick,
-        populateClickOnlyAction,
-      );
-    }
-  }
+  exportAddA11yClickSupport() {}
 }
 
 function removeEventListeners(
@@ -382,10 +312,4 @@ function removeEventListeners(
  * must have called `exportAddA11yClickSupport` in its compilation unit for this
  * to have any effect.
  */
-export function addDeferredA11yClickSupport(eventContract: EventContract) {
-  eventContract.ecaacs?.(
-    a11yClickLib.updateEventInfoForA11yClick,
-    a11yClickLib.preventDefaultForA11yClick,
-    a11yClickLib.populateClickOnlyAction,
-  );
-}
+export function addDeferredA11yClickSupport(eventContract: EventContract) {}

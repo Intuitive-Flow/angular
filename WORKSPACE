@@ -75,7 +75,7 @@ yarn_install(
         "//:.yarnrc",
         "//:tools/npm-patches/@bazel+jasmine+5.8.1.patch",
         "//tools:postinstall-patches.js",
-        "//tools/esm-interop:patches/npm/@angular+build-tooling+0.0.0-56d0b1f597b9e4b5d99f289f6904a220802164c1.patch",
+        "//tools/esm-interop:patches/npm/@angular+build-tooling+0.0.0-239d56b71911f9fa1eeefb6e4505dbe7b0cd81a7.patch",
         "//tools/esm-interop:patches/npm/@bazel+concatjs+5.8.1.patch",
         "//tools/esm-interop:patches/npm/@bazel+esbuild+5.7.1.patch",
         "//tools/esm-interop:patches/npm/@bazel+protractor+5.7.1.patch",
@@ -92,30 +92,6 @@ yarn_install(
     symlink_node_modules = True,
     yarn = YARN_LABEL,
     yarn_lock = "//:yarn.lock",
-)
-
-yarn_install(
-    name = "aio_example_deps",
-    # Rename the default js_library target from "node_modules" as this obscures the
-    # the source directory stamped as a filegroup in the manual BUILD contents below.
-    all_node_modules_target_name = "node_modules_all",
-    data = [
-        YARN_LABEL,
-        "//:.yarnrc",
-    ],
-    # Disabled because, when False, yarn_install preserves the node_modules folder
-    # with bin symlinks in the external repository. This is needed to link the shared
-    # set of deps for example e2es.
-    exports_directories_only = False,
-    manual_build_file_contents = """\
-filegroup(
-    name = "node_modules_files",
-    srcs = ["node_modules"],
-)
-""",
-    package_json = "//aio/tools/examples/shared:package.json",
-    yarn = YARN_LABEL,
-    yarn_lock = "//aio/tools/examples/shared:yarn.lock",
 )
 
 load("@aspect_bazel_lib//lib:repositories.bzl", "aspect_bazel_lib_dependencies")
@@ -167,10 +143,10 @@ cldr_xml_data_repository(
 # sass rules
 http_archive(
     name = "io_bazel_rules_sass",
-    sha256 = "e50e1ca1b0a737d2c09efbbb886e0194d99caed617337a766b17c1ee4bae93f2",
-    strip_prefix = "rules_sass-fcce06104e072bbebbf92c1a244ea9f8c2fc8402",
+    sha256 = "47c50aa960ddf875a2a2dd7efd1c839e5f8598725c00014680122b0e48d0ec7f",
+    strip_prefix = "rules_sass-b222c61b3d3879ec45b66062b2c706a72f3d80bb",
     urls = [
-        "https://github.com/bazelbuild/rules_sass/archive/fcce06104e072bbebbf92c1a244ea9f8c2fc8402.zip",
+        "https://github.com/bazelbuild/rules_sass/archive/b222c61b3d3879ec45b66062b2c706a72f3d80bb.zip",
     ],
 )
 

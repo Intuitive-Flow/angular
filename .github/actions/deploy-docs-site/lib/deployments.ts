@@ -51,15 +51,15 @@ export async function getDeployments(): Promise<Deployments> {
     docSites.set(releaseTrains.releaseCandidate.branchName, {
       branch: releaseTrains.releaseCandidate.branchName,
       destination: 'next-angular-dev',
+      redirect: {
+        from: `v${releaseTrains.releaseCandidate.version.major}-angular-dev`,
+        to: 'https://next.angular.dev',
+      },
     });
   } else {
     docSites.set(releaseTrains.next.branchName, {
       branch: releaseTrains.next.branchName,
       destination: 'next-angular-dev',
-      redirect: {
-        from: `v${releaseTrains.next.version.major}-angular-dev`,
-        to: 'https://next.angular.dev',
-      },
     });
   }
 

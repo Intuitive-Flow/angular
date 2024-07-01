@@ -26,8 +26,55 @@ import {
 interface EventTaskData extends TaskData {
   // use global callback or not
   readonly useG?: boolean;
+  taskData?: any;
 }
 
+/** @internal **/
+interface InternalGlobalTaskData {
+  // This is used internally to avoid duplicating event listeners on
+  // the same target when the event name is the same, such as when
+  // `addEventListener` is called multiple times on the `document`
+  // for the `keydown` event.
+  isExisting?: boolean;
+  // `target` is the actual event target on which `addEventListener`
+  // is being called.
+  target?: any;
+  eventName?: string;
+  capture?: boolean;
+  // Not changing the type to avoid any regressions.
+  options?: any; // boolean | AddEventListenerOptions
+}
+
+/**
+ * The `scheduleEventTask` function returns an `EventTask` object.
+ * However, we also store some task-related information on the task
+ * itself, such as the task target, for easy access when the task is
+ * manually canceled or for other purposes. This internal storage is
+ * used solely for enhancing our understanding of which properties are
+ * being assigned to the task.
+ *
+ * @internal
+ */
+interface InternalEventTask extends EventTask {
+  removeAbortListener?: VoidFunction | null;
+  // `target` is the actual event target on which `addEventListener`
+  // is being called for this specific task.
+  target?: any;
+  eventName?: string;
+  capture?: boolean;
+  // Not changing the type to avoid any regressions.
+  options?: any; // boolean | AddEventListenerOptions
+  // `isRemoved` is associated with a specific task and indicates whether
+  // that task was canceled and removed from the event target to prevent
+  // its invocation if dispatched later.
+  isRemoved?: boolean;
+  allRemoved?: boolean;
+}
+
+// Note that passive event listeners are now supported by most modern browsers,
+// including Chrome, Firefox, Safari, and Edge. There's a pending change that
+// would remove support for legacy browsers by zone.js. Removing `passiveSupported`
+// from the codebase will reduce the final code size for existing apps that still use zone.js.
 let passiveSupported = false;
 
 if (typeof window !== 'undefined') {
@@ -245,9 +292,15 @@ export function patchEventTarget(
 
     const eventNameToString = patchOptions && patchOptions.eventNameToString;
 
-    // a shared global taskData to pass data for scheduleEventTask
-    // so we do not need to create a new object just for pass some data
-    const taskData: any = {};
+    // We use a shared global `taskData` to pass data for `scheduleEventTask`,
+    // eliminating the need to create a new object solely for passing data.
+    // WARNING: This object has a static lifetime, meaning it is not created
+    // each time `addEventListener` is called. It is instantiated only once
+    // and captured by reference inside the `addEventListener` and
+    // `removeEventListener` functions. Do not add any new properties to this
+    // object, as doing so would necessitate maintaining the information
+    // between `addEventListener` calls.
+    const taskData: InternalGlobalTaskData = {};
 
     const nativeAddEventListener = (proto[zoneSymbolAddEventListener] = proto[ADD_EVENT_LISTENER]);
     const nativeRemoveEventListener = (proto[zoneSymbol(REMOVE_EVENT_LISTENER)] =
@@ -304,12 +357,18 @@ export function patchEventTarget(
       );
     };
 
-    const customCancelGlobal = function (task: any) {
+    /**
+     * In the context of events and listeners, this function will be
+     * called at the end by `cancelTask`, which, in turn, calls `task.cancelFn`.
+     * Cancelling a task is primarily used to remove event listeners from
+     * the task target.
+     */
+    const customCancelGlobal = function (task: InternalEventTask) {
       // if task is not marked as isRemoved, this call is directly
       // from Zone.prototype.cancelTask, we should remove the task
       // from tasksList of target first
       if (!task.isRemoved) {
-        const symbolEventNames = zoneSymbolEventNames[task.eventName];
+        const symbolEventNames = zoneSymbolEventNames[task.eventName!];
         let symbolEventName;
         if (symbolEventNames) {
           symbolEventName = symbolEventNames[task.capture ? TRUE_STR : FALSE_STR];
@@ -322,6 +381,10 @@ export function patchEventTarget(
               existingTasks.splice(i, 1);
               // set isRemoved to data for faster invokeTask check
               task.isRemoved = true;
+              if (task.removeAbortListener) {
+                task.removeAbortListener();
+                task.removeAbortListener = null;
+              }
               if (existingTasks.length === 0) {
                 // all tasks for the eventName + capture have gone,
                 // remove globalZoneAwareCallback and remove the task cache from target
@@ -386,6 +449,30 @@ export function patchEventTarget(
     const unpatchedEvents: string[] = (Zone as any)[zoneSymbol('UNPATCHED_EVENTS')];
     const passiveEvents: string[] = _global[zoneSymbol('PASSIVE_EVENTS')];
 
+    function copyEventListenerOptions(options: any) {
+      if (typeof options === 'object' && options !== null) {
+        // We need to destructure the target `options` object since it may
+        // be frozen or sealed (possibly provided implicitly by a third-party
+        // library), or its properties may be readonly.
+        const newOptions: any = {...options};
+        // The `signal` option was recently introduced, which caused regressions in
+        // third-party scenarios where `AbortController` was directly provided to
+        // `addEventListener` as options. For instance, in cases like
+        // `document.addEventListener('keydown', callback, abortControllerInstance)`,
+        // which is valid because `AbortController` includes a `signal` getter, spreading
+        // `{...options}` wouldn't copy the `signal`. Additionally, using `Object.create`
+        // isn't feasible since `AbortController` is a built-in object type, and attempting
+        // to create a new object directly with it as the prototype might result in
+        // unexpected behavior.
+        if (options.signal) {
+          newOptions.signal = options.signal;
+        }
+        return newOptions;
+      }
+
+      return options;
+    }
+
     const makeAddListener = function (
       nativeListener: any,
       addSource: string,
@@ -426,7 +513,7 @@ export function patchEventTarget(
 
         const passive =
           passiveSupported && !!passiveEvents && passiveEvents.indexOf(eventName) !== -1;
-        const options = buildEventListenerOptions(arguments[2], passive);
+        const options = copyEventListenerOptions(buildEventListenerOptions(arguments[2], passive));
         const signal: AbortSignal | undefined = options?.signal;
         if (signal?.aborted) {
           // the signal is an aborted one, just return without attaching the event listener.
@@ -484,13 +571,18 @@ export function patchEventTarget(
             addSource +
             (eventNameToString ? eventNameToString(eventName) : eventName);
         }
-        // do not create a new object as task.data to pass those things
-        // just use the global shared one
+
+        // In the code below, `options` should no longer be reassigned; instead, it
+        // should only be mutated. This is because we pass that object to the native
+        // `addEventListener`.
+        // It's generally recommended to use the same object reference for options.
+        // This ensures consistency and avoids potential issues.
         taskData.options = options;
+
         if (once) {
-          // if addEventListener with once options, we don't pass it to
-          // native addEventListener, instead we keep the once setting
-          // and handle ourselves.
+          // When using `addEventListener` with the `once` option, we don't pass
+          // the `once` option directly to the native `addEventListener` method.
+          // Instead, we keep the `once` setting and handle it ourselves.
           taskData.options.once = false;
         }
         taskData.target = target;
@@ -502,16 +594,21 @@ export function patchEventTarget(
 
         // keep taskData into data to allow onScheduleEventTask to access the task information
         if (data) {
-          (data as any).taskData = taskData;
+          data.taskData = taskData;
         }
 
         if (signal) {
-          // if addEventListener with signal options, we don't pass it to
-          // native addEventListener, instead we keep the signal setting
-          // and handle ourselves.
+          // When using `addEventListener` with the `signal` option, we don't pass
+          // the `signal` option directly to the native `addEventListener` method.
+          // Instead, we keep the `signal` setting and handle it ourselves.
           taskData.options.signal = undefined;
         }
-        const task: any = zone.scheduleEventTask(
+
+        // The `scheduleEventTask` function will ultimately call `customScheduleGlobal`,
+        // which in turn calls the native `addEventListener`. This is why `taskData.options`
+        // is updated before scheduling the task, as `customScheduleGlobal` uses
+        // `taskData.options` to pass it to the native `addEventListener`.
+        const task: InternalEventTask = zone.scheduleEventTask(
           source,
           delegate,
           data,
@@ -531,9 +628,7 @@ export function patchEventTarget(
           // as it creates a closure that captures `task`. This closure retains a reference to the
           // `task` object even after it goes out of scope, preventing `task` from being garbage
           // collected.
-          if (data) {
-            (data as any).removeAbortListener = () => signal.removeEventListener('abort', onAbort);
-          }
+          task.removeAbortListener = () => signal.removeEventListener('abort', onAbort);
         }
 
         // should clear taskData.target to avoid memory leak
@@ -542,13 +637,13 @@ export function patchEventTarget(
 
         // need to clear up taskData because it is a global object
         if (data) {
-          (data as any).taskData = null;
+          data.taskData = null;
         }
 
         // have to save those information to task in case
         // application may call task.zone.cancelTask() directly
         if (once) {
-          options.once = true;
+          taskData.options.once = true;
         }
         if (!(!passiveSupported && typeof task.options === 'boolean')) {
           // if not support passive, and we pass an option object
@@ -618,18 +713,22 @@ export function patchEventTarget(
       if (symbolEventNames) {
         symbolEventName = symbolEventNames[capture ? TRUE_STR : FALSE_STR];
       }
-      const existingTasks: Task[] = symbolEventName && target[symbolEventName];
+      const existingTasks: InternalEventTask[] = symbolEventName && target[symbolEventName];
+      // `existingTasks` may not exist if the `addEventListener` was called before
+      // it was patched by zone.js. Please refer to the attached issue for
+      // clarification, particularly after the `if` condition, before calling
+      // the native `removeEventListener`.
       if (existingTasks) {
         for (let i = 0; i < existingTasks.length; i++) {
           const existingTask = existingTasks[i];
           if (compare(existingTask, delegate)) {
             existingTasks.splice(i, 1);
             // set isRemoved to data for faster invokeTask check
-            (existingTask as any).isRemoved = true;
+            existingTask.isRemoved = true;
             if (existingTasks.length === 0) {
               // all tasks for the eventName + capture have gone,
               // remove globalZoneAwareCallback and remove the task cache from target
-              (existingTask as any).allRemoved = true;
+              existingTask.allRemoved = true;
               target[symbolEventName] = null;
               // in the target, we have an event listener which is added by on_property
               // such as target.onclick = function() {}, so we need to clear this internal
@@ -641,15 +740,11 @@ export function patchEventTarget(
                 target[onPropertySymbol] = null;
               }
             }
-
-            // Note that `removeAllListeners` would ultimately call `removeEventListener`,
-            // so we're safe to remove the abort listener only once here.
-            const taskData = existingTask.data as any;
-            if (taskData?.removeAbortListener) {
-              taskData.removeAbortListener();
-              taskData.removeAbortListener = null;
-            }
-
+            // In all other conditions, when `addEventListener` is called after being
+            // patched by zone.js, we would always find an event task on the `EventTarget`.
+            // This will trigger `cancelFn` on the `existingTask`, leading to `customCancelGlobal`,
+            // which ultimately removes an event listener and cleans up the abort listener
+            // (if an `AbortSignal` was provided when scheduling a task).
             existingTask.zone.cancelTask(existingTask);
             if (returnTarget) {
               return target;
@@ -658,10 +753,12 @@ export function patchEventTarget(
           }
         }
       }
-      // issue 930, didn't find the event name or callback
-      // from zone kept existingTasks, the callback maybe
-      // added outside of zone, we need to call native removeEventListener
-      // to try to remove it.
+      // https://github.com/angular/zone.js/issues/930
+      // We may encounter a situation where the `addEventListener` was
+      // called on the event target before zone.js is loaded, resulting
+      // in no task being stored on the event target due to its invocation
+      // of the native implementation. In this scenario, we simply need to
+      // invoke the native `removeEventListener`.
       return nativeRemoveEventListener.apply(this, arguments);
     };
 

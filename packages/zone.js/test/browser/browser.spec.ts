@@ -2237,6 +2237,95 @@ describe('Zone', function () {
         expect(logs).toEqual(['click2', 'click4']);
       });
 
+      // https://github.com/angular/angular/issues/54831
+      // https://github.com/angular/angular/issues/54142
+      it('should support passing `AbortController` directly to `addEventListener`', function () {
+        let logs: string[] = [];
+        const ac = new AbortController();
+
+        button.addEventListener(
+          'click',
+          function () {
+            logs.push('click1');
+          },
+          ac,
+        );
+        button.addEventListener('click', function () {
+          logs.push('click2');
+        });
+        button.addEventListener(
+          'click',
+          function () {
+            logs.push('click3');
+          },
+          ac,
+        );
+        let listeners = button.eventListeners!('click');
+        expect(listeners.length).toBe(3);
+
+        button.dispatchEvent(clickEvent);
+        expect(logs.length).toBe(3);
+        expect(logs).toEqual(['click1', 'click2', 'click3']);
+        ac.abort();
+        logs = [];
+
+        listeners = button.eventListeners!('click');
+        button.dispatchEvent(clickEvent);
+        expect(logs.length).toBe(1);
+        expect(listeners.length).toBe(1);
+        expect(logs).toEqual(['click2']);
+      });
+
+      // https://github.com/angular/angular/issues/56148
+      it('should store the remove abort listener on the task itself and not the task data', function () {
+        const logs: string[] = [];
+        const ac = new AbortController();
+        const onLoad = jasmine.createSpy();
+
+        // Note that we have to manually spy on the `removeEventListener`
+        // because zone.js calls the native `addEventListener` for an
+        // `AbortSignal`, which isn't patched by zone.js. Thus, calling
+        // `signal.eventListeners('abort')` would always return an empty list.
+        const removeEventListenerSpy = spyOn(
+          AbortSignal.prototype,
+          'removeEventListener',
+        ).and.callThrough();
+
+        window.addEventListener('load', onLoad, {once: true});
+
+        button.addEventListener(
+          'click',
+          function () {
+            logs.push('click');
+          },
+          {signal: ac.signal},
+        );
+
+        // In this scenario, we must dispatch the load event because
+        // `{once:true}` options are provided. This action will remove
+        // the event listener on the `window` after the task is executed,
+        // effectively cancelling it. Previously, we encountered a regression
+        // where `removeAbortListener` was stored on the task data instead of
+        // the task itself. Consequently, it would remove the `abort` listener
+        // from the signal. As a result, calling `abort()` on the controller wouldn't
+        // cancel any events because there was no `abort` listener present.
+        window.dispatchEvent(new Event('load'));
+        expect(onLoad).toHaveBeenCalled();
+
+        // Assert that the `abort` event listener has NOT been removed.
+        expect(removeEventListenerSpy).toHaveBeenCalledTimes(0);
+
+        // When calling abort, it should now remove the event listener
+        // from the button, thus dispatching events should not trigger the listener.
+        ac.abort();
+
+        button.dispatchEvent(clickEvent);
+
+        const listeners = button.eventListeners!('click');
+        expect(listeners.length).toBe(0);
+        expect(logs).toEqual([]);
+      });
+
       it('should not add event listeners with aborted signal', function () {
         let logs: string[] = [];
 
